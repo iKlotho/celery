@@ -1,4 +1,5 @@
 """Gevent execution pool."""
+from . import base
 from functools import partial
 from time import monotonic
 
@@ -7,7 +8,6 @@ from kombu.asynchronous import timer as _timer
 
 from celery.utils.log import get_logger
 logger = get_logger(__name__)
-from . import base
 
 try:
     from gevent import Timeout
@@ -114,7 +114,7 @@ class TaskPool(base.BasePool):
         target = TaskPool._make_killable_target(target)
         greenlet = self._quick_put(apply_timeout if timeout else apply_target,
                                    target, args, kwargs, callback, accept_callback,
-                                   timeout=timeout,
+                                   self.getpid, timeout=timeout,
                                    timeout_callback=timeout_callback)
         greenlet = TaskPool._make_greenlet_killable(greenlet)
         self._add_to_pool_map(id(greenlet), greenlet)
@@ -136,6 +136,8 @@ class TaskPool(base.BasePool):
             greenlet = self._pool_map[pid]
             greenlet.kill()
             greenlet.wait()
+        else:
+            logger.info("PID found in the pool available keys : %s !", self._pool_map.keys())
 
     @staticmethod
     def _make_killable_target(target):
@@ -164,8 +166,6 @@ class TaskPool(base.BasePool):
     def _make_greenlet_killable(greenlet):
         setattr(greenlet, "terminate", lambda signal: greenlet.kill())
         return greenlet
-
-
 
     @property
     def num_processes(self):
