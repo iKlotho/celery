@@ -116,6 +116,7 @@ class TaskPool(base.BasePool):
                                    target, args, kwargs, callback, accept_callback,
                                    timeout=timeout,
                                    timeout_callback=timeout_callback)
+        greenlet = TaskPool._make_greenlet_killable(greenlet)
         self._add_to_pool_map(id(greenlet), greenlet)
 
         return greenlet
@@ -134,6 +135,7 @@ class TaskPool(base.BasePool):
             logger.info("PID found in the pool map terminating!")
             greenlet = self._pool_map[pid]
             greenlet.kill()
+            greenlet.wait()
 
     @staticmethod
     def _make_killable_target(target):
@@ -157,6 +159,13 @@ class TaskPool(base.BasePool):
     @staticmethod
     def _cleanup_after_job_finish(pool_map, pid, greenlet):
         del pool_map[pid]
+
+    @staticmethod
+    def _make_greenlet_killable(greenlet):
+        setattr(greenlet, "terminate", lambda: greenlet.kill())
+        return greenlet
+
+
 
     @property
     def num_processes(self):
