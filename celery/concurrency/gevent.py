@@ -1,8 +1,12 @@
 """Gevent execution pool."""
+from functools import partial
 from time import monotonic
 
+from greenlet import GreenletExit
 from kombu.asynchronous import timer as _timer
 
+from celery.utils.log import get_logger
+logger = get_logger(__name__)
 from . import base
 
 try:
@@ -86,13 +90,16 @@ class TaskPool(base.BasePool):
 
     def __init__(self, *args, **kwargs):
         from gevent import spawn_raw
+        from greenlet import getcurrent
         from gevent.pool import Pool
         self.Pool = Pool
         self.spawn_n = spawn_raw
         self.timeout = kwargs.get('timeout')
+        self.getpid = lambda: id(getcurrent())
         super().__init__(*args, **kwargs)
 
     def on_start(self):
+        self._pool_map = {}
         self._pool = self.Pool(self.limit)
         self._quick_put = self._pool.spawn
 
@@ -104,10 +111,14 @@ class TaskPool(base.BasePool):
                  accept_callback=None, timeout=None,
                  timeout_callback=None, apply_target=base.apply_target, **_):
         timeout = self.timeout if timeout is None else timeout
-        return self._quick_put(apply_timeout if timeout else apply_target,
-                               target, args, kwargs, callback, accept_callback,
-                               timeout=timeout,
-                               timeout_callback=timeout_callback)
+        target = TaskPool._make_killable_target(target)
+        greenlet = self._quick_put(apply_timeout if timeout else apply_target,
+                                   target, args, kwargs, callback, accept_callback,
+                                   timeout=timeout,
+                                   timeout_callback=timeout_callback)
+        self._add_to_pool_map(id(greenlet), greenlet)
+
+        return greenlet
 
     def grow(self, n=1):
         self._pool._semaphore.counter += n
@@ -118,8 +129,34 @@ class TaskPool(base.BasePool):
         self._pool.size -= n
 
     def terminate_job(self, pid, signal=None):
-        if self._pool is not None:
-            self._pool.kill()
+        logger.info("Terminate job runned with pid: %s", pid)
+        if pid in self._pool_map.keys():
+            logger.info("PID found in the pool map terminating!")
+            greenlet = self._pool_map[pid]
+            greenlet.kill()
+
+    @staticmethod
+    def _make_killable_target(target):
+        def killable_target(*args, **kwargs):
+            try:
+                return target(*args, **kwargs)
+            except GreenletExit:
+                return (False, None, None)
+        return killable_target
+
+    def _add_to_pool_map(self, pid, greenlet):
+        self._pool_map[pid] = greenlet
+        greenlet.link(
+            partial(
+                TaskPool._cleanup_after_job_finish,
+                self._pool_map,
+                pid
+            )
+        )
+
+    @staticmethod
+    def _cleanup_after_job_finish(pool_map, pid, greenlet):
+        del pool_map[pid]
 
     @property
     def num_processes(self):
