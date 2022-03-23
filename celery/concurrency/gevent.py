@@ -117,6 +117,10 @@ class TaskPool(base.BasePool):
         self._pool._semaphore.counter -= n
         self._pool.size -= n
 
+    def terminate_job(self, pid, signal=None):
+        if self._pool is not None:
+            self._pool.kill()
+
     @property
     def num_processes(self):
         return len(self._pool)
