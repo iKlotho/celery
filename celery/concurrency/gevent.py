@@ -162,7 +162,7 @@ class TaskPool(base.BasePool):
 
     @staticmethod
     def _make_greenlet_killable(greenlet):
-        setattr(greenlet, "terminate", lambda: greenlet.kill())
+        setattr(greenlet, "terminate", lambda signal: greenlet.kill())
         return greenlet
 
 
