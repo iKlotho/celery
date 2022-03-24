@@ -95,7 +95,6 @@ class TaskPool(base.BasePool):
         self.Pool = Pool
         self.spawn_n = spawn_raw
         self.timeout = kwargs.get('timeout')
-        self.getpid = lambda: id(getcurrent())
         super().__init__(*args, **kwargs)
 
     def on_start(self):
@@ -112,12 +111,18 @@ class TaskPool(base.BasePool):
                  timeout_callback=None, apply_target=base.apply_target, **_):
         timeout = self.timeout if timeout is None else timeout
         target = TaskPool._make_killable_target(target)
+        """
+            Use task_id as the pid so we can kill all the greenlets that belongs to that task
+            TODO: what happens when terminate called on pool?
+        """
+        task_id = args[1]
+        self.getpid = lambda: task_id
         greenlet = self._quick_put(apply_timeout if timeout else apply_target,
                                    target, args, kwargs, callback, accept_callback,
-                                   self.getpid, timeout=timeout,
+                                   pid=task_id, timeout=timeout,
                                    timeout_callback=timeout_callback)
         greenlet = TaskPool._make_greenlet_killable(greenlet)
-        self._add_to_pool_map(id(greenlet), greenlet)
+        self._add_to_pool_map(task_id, greenlet)
 
         return greenlet
 
@@ -133,11 +138,10 @@ class TaskPool(base.BasePool):
         logger.info("Terminate job runned with pid: %s", pid)
         if pid in self._pool_map.keys():
             logger.info("PID found in the pool map terminating!")
-            greenlet = self._pool_map[pid]
-            greenlet.kill()
-            greenlet.wait()
+            for greenlet in self._pool_map[pid]:
+                greenlet.kill()
         else:
-            logger.info("PID found in the pool available keys : %s !", self._pool_map.keys())
+            logger.warning("PID: %s not found in the pool available keys : %s !", pid, self._pool_map.keys())
 
     @staticmethod
     def _make_killable_target(target):
@@ -149,7 +153,8 @@ class TaskPool(base.BasePool):
         return killable_target
 
     def _add_to_pool_map(self, pid, greenlet):
-        self._pool_map[pid] = greenlet
+        self._pool_map.setdefault(pid, [])
+        self._pool_map[pid].append(greenlet)
         greenlet.link(
             partial(
                 TaskPool._cleanup_after_job_finish,
@@ -160,7 +165,14 @@ class TaskPool(base.BasePool):
 
     @staticmethod
     def _cleanup_after_job_finish(pool_map, pid, greenlet):
-        del pool_map[pid]
+        if pid in pool_map:
+            pm = pool_map[pid]
+            try:
+                pm.pop(pm.index(greenlet))
+            except ValueError:
+                logger.warning("Greenlet cleanup failed!")
+        else:
+            logger.warning("Greenlet not in the poolmap!")
 
     @staticmethod
     def _make_greenlet_killable(greenlet):
